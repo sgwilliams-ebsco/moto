@@ -522,9 +522,11 @@ class ResourceMap(collections_abc.Mapping):
                     # we need to use ssm_backend to retreive the 
                     # actual value from parameter store
 
-                    actual_value = ssm_backend.get_parameter(value, False)
+                    parameter = ssm_backend.get_parameter(value, False)
 
-                    if value_type.Contains("List"):
+                    actual_value = parameter.value
+
+                    if value_type.find("List") > 0: 
                         return actual_value.split(',')
 
                     return actual_value
