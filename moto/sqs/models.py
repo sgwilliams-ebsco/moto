@@ -3,7 +3,10 @@ from __future__ import unicode_literals
 import base64
 import hashlib
 import json
+import random
 import re
+import string
+
 import six
 import struct
 from copy import deepcopy
@@ -67,7 +70,7 @@ DEDUPLICATION_TIME_IN_SECONDS = 300
 
 
 class Message(BaseModel):
-    def __init__(self, message_id, body):
+    def __init__(self, message_id, body, system_attributes={}):
         self.id = message_id
         self._body = body
         self.message_attributes = {}
@@ -78,8 +81,10 @@ class Message(BaseModel):
         self.approximate_receive_count = 0
         self.deduplication_id = None
         self.group_id = None
+        self.sequence_number = None
         self.visible_at = 0
         self.delayed_until = 0
+        self.system_attributes = system_attributes
 
     @property
     def body_md5(self):
@@ -669,6 +674,7 @@ class SQSBackend(BaseBackend):
         delay_seconds=None,
         deduplication_id=None,
         group_id=None,
+        system_attributes=None,
     ):
 
         queue = self.get_queue(queue_name)
@@ -685,7 +691,7 @@ class SQSBackend(BaseBackend):
             delay_seconds = queue.delay_seconds
 
         message_id = get_random_message_id()
-        message = Message(message_id, message_body)
+        message = Message(message_id, message_body, system_attributes)
 
         # if content based deduplication is set then set sha256 hash of the message
         # as the deduplication_id
@@ -697,6 +703,9 @@ class SQSBackend(BaseBackend):
         # Attributes, but not *message* attributes
         if deduplication_id is not None:
             message.deduplication_id = deduplication_id
+            message.sequence_number = "".join(
+                random.choice(string.digits) for _ in range(20)
+            )
         if group_id is not None:
             message.group_id = group_id
 
@@ -827,6 +836,8 @@ class SQSBackend(BaseBackend):
                 queue.pending_messages.add(message)
                 message.mark_received(visibility_timeout=visibility_timeout)
                 _filter_message_attributes(message, message_attribute_names)
+                if not self.is_message_valid_based_on_retention_period(queue_name):
+                    break
                 result.append(message)
                 if len(result) >= count:
                     break
@@ -1003,6 +1014,15 @@ class SQSBackend(BaseBackend):
 
     def list_queue_tags(self, queue_name):
         return self.get_queue(queue_name)
+
+    def is_message_valid_based_on_retention_period(self, queue_name):
+        message_attributes = self.get_queue_attributes(queue_name, [])
+        retain_until = message_attributes.get(
+            "MessageRetentionPeriod"
+        ) + message_attributes.get("CreatedTimestamp")
+        if retain_until <= unix_time():
+            return False
+        return True
 
 
 sqs_backends = {}

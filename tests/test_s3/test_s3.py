@@ -7,6 +7,7 @@ import os
 from boto3 import Session
 from six.moves.urllib.request import urlopen
 from six.moves.urllib.error import HTTPError
+from six.moves.urllib.parse import urlparse, parse_qs
 from functools import wraps
 from gzip import GzipFile
 from io import BytesIO
@@ -976,6 +977,17 @@ def test_acl_switching():
         and g.permission == "READ"
         for g in grants
     ), grants
+
+
+@mock_s3
+def test_acl_switching_nonexistent_key():
+    s3 = boto3.client("s3", region_name=DEFAULT_REGION_NAME)
+    s3.create_bucket(Bucket="mybucket")
+
+    with pytest.raises(ClientError) as e:
+        s3.put_object_acl(Bucket="mybucket", Key="nonexistent", ACL="private")
+
+    e.value.response["Error"]["Code"].should.equal("NoSuchKey")
 
 
 @mock_s3_deprecated
@@ -4814,9 +4826,11 @@ def test_creating_presigned_post():
         {"success_action_redirect": success_url},
     ]
     conditions.append(["content-length-range", 1, 30])
+
+    real_key = "{file_uid}.txt".format(file_uid=file_uid)
     data = s3.generate_presigned_post(
         Bucket=bucket,
-        Key="{file_uid}.txt".format(file_uid=file_uid),
+        Key=real_key,
         Fields={
             "content-type": "text/plain",
             "success_action_redirect": success_url,
@@ -4828,14 +4842,15 @@ def test_creating_presigned_post():
     resp = requests.post(
         data["url"], data=data["fields"], files={"file": fdata}, allow_redirects=False
     )
-    assert resp.headers["Location"] == success_url
     assert resp.status_code == 303
-    assert (
-        s3.get_object(Bucket=bucket, Key="{file_uid}.txt".format(file_uid=file_uid))[
-            "Body"
-        ].read()
-        == fdata
-    )
+    redirect = resp.headers["Location"]
+    assert redirect.startswith(success_url)
+    parts = urlparse(redirect)
+    args = parse_qs(parts.query)
+    assert args["key"][0] == real_key
+    assert args["bucket"][0] == bucket
+
+    assert s3.get_object(Bucket=bucket, Key=real_key)["Body"].read() == fdata
 
 
 @mock_s3
@@ -4998,10 +5013,10 @@ def test_get_unknown_version_should_throw_specific_error():
 
     with pytest.raises(ClientError) as e:
         client.get_object(Bucket=bucket_name, Key=object_key, VersionId="unknown")
-    e.value.response["Error"]["Code"].should.equal("InvalidArgument")
-    e.value.response["Error"]["Message"].should.equal("Invalid version id specified")
-    e.value.response["Error"]["ArgumentName"].should.equal("versionId")
-    e.value.response["Error"]["ArgumentValue"].should.equal("unknown")
+    e.value.response["Error"]["Code"].should.equal("NoSuchVersion")
+    e.value.response["Error"]["Message"].should.equal(
+        "The specified version does not exist."
+    )
 
 
 @mock_s3
